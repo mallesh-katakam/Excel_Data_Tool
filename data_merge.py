@@ -298,6 +298,19 @@ class DataEnricher:
                 return excel_col
         return None
     
+    def normalize_column_name(self, column_name: str) -> str:
+        """Normalize column name by converting underscores to spaces and lowercasing for comparison."""
+        return str(column_name).lower().strip().replace('_', ' ')
+    
+    def find_column_normalized(self, column_name: str, target_columns: List[str]) -> Optional[str]:
+        """Find a column name using normalized comparison (case-insensitive, underscore/space agnostic)."""
+        normalized_search = self.normalize_column_name(column_name)
+        for target_col in target_columns:
+            normalized_target = self.normalize_column_name(target_col)
+            if normalized_search == normalized_target:
+                return target_col
+        return None
+    
     def debug_log(self, message: str):
         """Log debug messages only if debug mode is enabled."""
         if self.debug_mode:
@@ -601,13 +614,6 @@ class DataEnricher:
             logger.error("Failed to get database columns")
             return None
         
-        # Define specific columns to fetch from database
-        target_columns = [
-            'Taxable_Amount', 'NonTaxable_Amount', 'Cgst_Total', 'Sgst_Total', 'Igst_Total',
-            'Booking_Date', 'GST_Name', 'GST_Number', 'Invoice_Number', 'Invoice_Total_GST',
-            'Airline_Gst_Number', 'Airline_Gst_Name'
-        ]
-        
         # Column rename mapping: database column name -> display name
         column_rename_map = {
             'Booking_Date': 'Booking Date',
@@ -621,13 +627,60 @@ class DataEnricher:
             'Airline_Gst_Name': 'Airline GST Name'
         }
         
-        # Find which target columns are missing from Excel data
-        missing_columns = [col for col in target_columns if col not in df_excel.columns]
+        # Find all missing columns from database (excluding reference columns)
+        # Get Excel column names mapped to database names for comparison
+        excel_columns_mapped = set()
+        for excel_col in df_excel.columns:
+            # Check if this Excel column maps to a database column
+            if excel_col in excel_to_db_mapping:
+                excel_columns_mapped.add(excel_to_db_mapping[excel_col])
+            else:
+                # Try normalized matching (case-insensitive, underscore/space agnostic)
+                matched_db_col = self.find_column_normalized(excel_col, all_db_columns)
+                if matched_db_col:
+                    excel_columns_mapped.add(matched_db_col)
+                    logger.debug(f"Matched Excel column '{excel_col}' to database column '{matched_db_col}' (normalized match)")
+                else:
+                    # If no mapping found, check if normalized name matches any DB column
+                    # This handles cases where Excel has "Ticket Number" and DB has "Ticket_Number"
+                    normalized_excel = self.normalize_column_name(excel_col)
+                    for db_col in all_db_columns:
+                        if self.normalize_column_name(db_col) == normalized_excel:
+                            excel_columns_mapped.add(db_col)
+                            logger.debug(f"Matched Excel column '{excel_col}' to database column '{db_col}' (normalized name match)")
+                            break
+        
+        # Find all database columns that are missing from Excel
+        # Exclude reference columns since they're already in Excel
+        # Use normalized comparison to check if column exists
+        missing_columns = []
+        for db_col in all_db_columns:
+            if db_col in reference_columns:
+                continue  # Skip reference columns
+            
+            # Check if this DB column is already in Excel (using normalized comparison)
+            is_missing = True
+            normalized_db_col = self.normalize_column_name(db_col)
+            
+            # Check if it's in the mapped set
+            if db_col in excel_columns_mapped:
+                is_missing = False
+            else:
+                # Also check normalized match against all Excel columns
+                for excel_col in df_excel.columns:
+                    normalized_excel_col = self.normalize_column_name(excel_col)
+                    if normalized_db_col == normalized_excel_col:
+                        is_missing = False
+                        break
+            
+            if is_missing:
+                missing_columns.append(db_col)
+        
         if not missing_columns:
-            logger.info("All target columns already present in Excel data")
+            logger.info("All database columns already present in Excel data")
             return df_excel
         
-        logger.info(f"Will fetch {len(missing_columns)} target columns from database: {missing_columns}")
+        logger.info(f"Will fetch {len(missing_columns)} missing columns from database: {missing_columns}")
         
         # Process data in batches
         enriched_data = []

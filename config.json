@@ -41,7 +41,7 @@
         "timezone": "IST"
     },
     "paths": {
-        "working_directory": "C:\\Users\\sharm\\OneDrive\\Desktop\\DATA_MERGE6"
+        "working_directory": "C:\\Users\\sharm\\OneDrive\\Desktop\\DATA_MERGE"
   },
   "sftp": {
     "enabled": false,
