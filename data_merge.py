@@ -215,12 +215,22 @@ class DataEnricher:
             logger.error(f"Error validating file: {e}")
             return False
     
-    def read_file_safely(self, file_path: str) -> Optional[pd.DataFrame]:
+    def read_file_safely(self, file_path: str) -> Optional[Dict[str, pd.DataFrame]]:
+        """
+        Read file and return sheets separately.
+        Returns dict of {sheet_name: DataFrame} for Excel files with multiple sheets,
+        or {sheet_name: DataFrame} for single sheet/CSV files.
+        """
         try:
             file_extension = os.path.splitext(file_path)[1].lower()
             if file_extension in ['.xlsx', '.xls']:
-                # Detect the correct header row automatically
-                preview = pd.read_excel(file_path, nrows=10, header=None)
+                # Read all sheets from Excel file
+                excel_file = pd.ExcelFile(file_path)
+                sheet_names = excel_file.sheet_names
+                logger.info(f"Found {len(sheet_names)} sheet(s): {sheet_names}")
+                
+                # Detect the correct header row automatically (using first sheet for preview)
+                preview = pd.read_excel(file_path, sheet_name=sheet_names[0], nrows=10, header=None)
                 header_row = None
                 for i, row in preview.iterrows():
                     # Heuristic: a row is header if most cells are strings and not NaN
@@ -229,21 +239,34 @@ class DataEnricher:
                         header_row = i
                         break
 
-                if header_row is not None:
-                    df = pd.read_excel(file_path, header=header_row)
-                else:
-                    df = pd.read_excel(file_path)
+                # Read all sheets separately
+                sheets_dict = {}
+                for sheet_name in sheet_names:
+                    if header_row is not None:
+                        df_sheet = pd.read_excel(file_path, sheet_name=sheet_name, header=header_row)
+                    else:
+                        df_sheet = pd.read_excel(file_path, sheet_name=sheet_name)
+                    
+                    # Remove unnamed columns (columns that start with "Unnamed:")
+                    unnamed_cols = [col for col in df_sheet.columns if str(col).startswith('Unnamed:')]
+                    if unnamed_cols:
+                        df_sheet = df_sheet.drop(columns=unnamed_cols)
+                        logger.info(f"Removed {len(unnamed_cols)} unnamed columns from sheet '{sheet_name}': {unnamed_cols}")
+                    
+                    sheets_dict[sheet_name] = df_sheet
+                    logger.info(f"Loaded sheet '{sheet_name}' with {len(df_sheet)} rows and columns: {list(df_sheet.columns)}")
+                
+                return sheets_dict
             else:
+                # For CSV files, return as single sheet
                 df = pd.read_csv(file_path)
-
-            # Remove unnamed columns (columns that start with "Unnamed:")
-            unnamed_cols = [col for col in df.columns if str(col).startswith('Unnamed:')]
-            if unnamed_cols:
-                df = df.drop(columns=unnamed_cols)
-                logger.info(f"Removed {len(unnamed_cols)} unnamed columns: {unnamed_cols}")
-            
-            logger.info(f"File loaded with columns: {list(df.columns)}")
-            return df
+                # Remove unnamed columns
+                unnamed_cols = [col for col in df.columns if str(col).startswith('Unnamed:')]
+                if unnamed_cols:
+                    df = df.drop(columns=unnamed_cols)
+                    logger.info(f"Removed {len(unnamed_cols)} unnamed columns: {unnamed_cols}")
+                logger.info(f"File loaded with columns: {list(df.columns)}")
+                return {"Sheet1": df}
         except Exception as e:
             logger.error(f"Error reading file: {e}")
             return None
@@ -553,30 +576,13 @@ class DataEnricher:
             # Don't fail - formatting is optional
             return False
     
-    def enrich_data(self, excel_path: str, table_name: str, 
-                   possible_reference_combinations: List[List[str]] = None,
-                   column_mapping: Dict[str, str] = None,
-                   output_path: Optional[str] = None) -> Optional[pd.DataFrame]:
+    def _enrich_single_dataframe(self, df_excel: pd.DataFrame, table_name: str,
+                                possible_reference_combinations: List[List[str]],
+                                column_mapping: Dict[str, str],
+                                all_db_columns: List[str]) -> Optional[pd.DataFrame]:
         """
-        Enhanced data enrichment with dynamic column detection and batch processing.
+        Helper method to enrich a single DataFrame.
         """
-        if column_mapping is None:
-            column_mapping = {}
-        if possible_reference_combinations is None:
-            possible_reference_combinations = POSSIBLE_REFERENCE_COMBINATIONS
-        
-        # Validate file
-        if not self.validate_file(excel_path):
-            return None
-        
-        # Read file
-        df_excel = self.read_file_safely(excel_path)
-        if df_excel is None:
-            return None
-        
-        logger.info(f"Processing {len(df_excel)} rows...")
-        logger.info(f"Available columns: {list(df_excel.columns)}")
-        
         # Create column mapping for database operations (without renaming Excel columns)
         # Use case-insensitive matching to handle variations like "airline PNR" vs "Airline PNR"
         excel_to_db_mapping = {}
@@ -607,12 +613,6 @@ class DataEnricher:
             return None
         
         logger.info(f"Using reference columns: {reference_columns}")
-        
-        # Get database columns
-        all_db_columns = self.get_all_columns(table_name)
-        if not all_db_columns:
-            logger.error("Failed to get database columns")
-            return None
         
         # Column rename mapping: database column name -> display name
         column_rename_map = {
@@ -796,17 +796,78 @@ class DataEnricher:
         logger.info(f"  No matches: {no_match_count}")
         logger.info(f"  Errors: {error_count}")
         
-        # Save output
+        return df_enriched
+
+    def enrich_data(self, excel_path: str, table_name: str, 
+                   possible_reference_combinations: List[List[str]] = None,
+                   column_mapping: Dict[str, str] = None,
+                   output_path: Optional[str] = None) -> Optional[pd.DataFrame]:
+        """
+        Enhanced data enrichment with dynamic column detection and batch processing.
+        Processes each sheet separately and maintains them in the output.
+        """
+        if column_mapping is None:
+            column_mapping = {}
+        if possible_reference_combinations is None:
+            possible_reference_combinations = POSSIBLE_REFERENCE_COMBINATIONS
+        
+        # Validate file
+        if not self.validate_file(excel_path):
+            return None
+        
+        # Read file - returns dict of {sheet_name: DataFrame}
+        sheets_dict = self.read_file_safely(excel_path)
+        if sheets_dict is None:
+            return None
+        
+        # Get database columns once (shared across all sheets)
+        all_db_columns = self.get_all_columns(table_name)
+        if not all_db_columns:
+            logger.error("Failed to get database columns")
+            return None
+        
+        # Process each sheet separately
+        enriched_sheets = {}
+        total_rows = 0
+        
+        for sheet_name, df_excel in sheets_dict.items():
+            logger.info(f"Processing sheet '{sheet_name}' with {len(df_excel)} rows...")
+            logger.info(f"Available columns: {list(df_excel.columns)}")
+            
+            df_enriched = self._enrich_single_dataframe(
+                df_excel, table_name, possible_reference_combinations,
+                column_mapping, all_db_columns
+            )
+            
+            if df_enriched is not None:
+                enriched_sheets[sheet_name] = df_enriched
+                total_rows += len(df_enriched)
+            else:
+                logger.warning(f"Failed to enrich sheet '{sheet_name}', keeping original")
+                enriched_sheets[sheet_name] = df_excel
+                total_rows += len(df_excel)
+        
+        if not enriched_sheets:
+            return None
+        
+        logger.info(f"Processed {len(enriched_sheets)} sheet(s) with {total_rows} total rows")
+        
+        # Save output - maintain separate sheets
         if output_path:
             try:
                 output_extension = os.path.splitext(output_path)[1].lower()
                 if output_extension == '.csv':
-                    df_enriched.to_csv(output_path, index=False)
-                    logger.info(f"Data saved to: {output_path}")
+                    # For CSV, use first sheet only (CSV doesn't support multiple sheets)
+                    first_sheet_name = list(enriched_sheets.keys())[0]
+                    enriched_sheets[first_sheet_name].to_csv(output_path, index=False)
+                    logger.info(f"Data saved to: {output_path} (CSV format - only first sheet saved)")
                 else:
-                    # Save data first using pandas (fast)
-                    df_enriched.to_excel(output_path, index=False, engine='openpyxl')
-                    logger.info(f"Data saved to: {output_path}")
+                    # Save all sheets to Excel file
+                    with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+                        for sheet_name, df_enriched in enriched_sheets.items():
+                            df_enriched.to_excel(writer, sheet_name=sheet_name, index=False)
+                            logger.info(f"Saved sheet '{sheet_name}' with {len(df_enriched)} rows")
+                    logger.info(f"Data saved to: {output_path} with {len(enriched_sheets)} sheet(s)")
                     
                     # Apply header formatting from original file (preserves performance)
                     # Only applies formatting, doesn't modify data
@@ -817,7 +878,10 @@ class DataEnricher:
             except Exception as e:
                 logger.error(f"Error saving file: {e}")
         
-        return df_enriched
+        # Return first sheet for backward compatibility (or concatenated if needed)
+        # For multi-sheet files, return the first sheet
+        first_sheet = list(enriched_sheets.values())[0]
+        return first_sheet
 
 
 class SFTPDownloader:
