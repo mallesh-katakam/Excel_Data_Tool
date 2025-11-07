@@ -13,6 +13,20 @@ for /f "usebackq tokens=*" %%i in (`powershell -Command "try { $config = Get-Con
 REM Change to the working directory
 cd /d "%WORKING_DIR%"
 
+REM Check for virtual environment and activate if it exists
+if exist "venv\Scripts\activate.bat" (
+    call venv\Scripts\activate.bat
+    echo Virtual environment activated: venv
+) else if exist ".venv\Scripts\activate.bat" (
+    call .venv\Scripts\activate.bat
+    echo Virtual environment activated: .venv
+) else if exist "env\Scripts\activate.bat" (
+    call env\Scripts\activate.bat
+    echo Virtual environment activated: env
+) else (
+    echo No virtual environment found, using system Python
+)
+
 REM Run the script in process mode (one-time execution)
 python data_merge.py process
 

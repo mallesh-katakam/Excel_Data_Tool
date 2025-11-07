@@ -1,6 +1,6 @@
 {
-    "input_directory": "C:\\Users\\sharm\\Downloads\\sftp_files",
-    "output_directory": "C:\\Users\\sharm\\Downloads\\sftp_files\\processed",
+    "input_directory": "D:\\Gst_Files",
+    "output_directory": "D:\\Gst_Files\\processed",
     "supported_extensions": [".xlsx", ".xls", ".csv"],
     "database": {
         "host": "183.82.97.170",
@@ -37,7 +37,7 @@
     },
     "scheduling": {
         "enabled": true,
-        "time": "18:55:00",
+        "time": "16:05:00",
         "timezone": "IST"
     },
     "paths": {
@@ -50,7 +50,7 @@
     "username": "",
     "password": "",
     "remote_file_path": "",
-    "local_download_dir": "C:\\Users\\sharm\\Downloads\\sftp_files"
+    "local_download_dir": "D:\\Gst_Files"
   },
   "email": {
     "enabled": false,
